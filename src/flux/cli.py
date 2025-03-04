@@ -298,14 +298,45 @@ def main(
 
         iter_count = 0
         runtimes = []
-        while iter_count < BENCHMARK_RUN_ITERS:
-            t0 = time.perf_counter()
-            x = iter(opts, ae, t5, clip, model)
-            iter_count += 1
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            t1 = time.perf_counter()
-            runtimes.append(t1 - t0)
+        import datetime
+        
+        def trace_handler(prof):
+            import datetime
+            import subprocess
+            
+            timestamp = int(datetime.datetime.now().timestamp())
+            trace_path = f"gpu_traces/trace_{timestamp}.json"
+            manifold_path = f"gpu_traces/tree/willfeng/flux/trace_{timestamp}.json"
+            
+            prof.export_chrome_trace(trace_path)
+            
+            # Run the manifold upload command
+            result = subprocess.run(
+                ["manifold", "put", trace_path, manifold_path],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                print(f"GPU trace URL (requires VPN): https://interncache-all.fbcdn.net/manifold/perfetto-artifacts/tree/ui/index.html#!/?url=https://interncache-all.fbcdn.net/manifold/gpu_traces/tree/willfeng/flux/trace_{timestamp}.json")
+            else:
+                print(f"Failed to upload trace: {result.stderr}")
+
+        with torch.profiler.profile(
+            activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+            schedule=torch.profiler.schedule(skip_first=1, wait=0, warmup=5, active=2),
+            on_trace_ready=trace_handler,
+            with_stack=False,
+        ) as prof:
+            while iter_count < BENCHMARK_RUN_ITERS:
+                t0 = time.perf_counter()
+                x = iter(opts, ae, t5, clip, model)
+                if torch.cuda.is_available(): torch.cuda.synchronize()
+                t1 = time.perf_counter()
+                runtimes.append(t1 - t0)
+                iter_count += 1
+                prof.step()
+        
         import statistics
         median_runtime = statistics.median(runtimes)
 
