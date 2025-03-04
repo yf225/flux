@@ -15,6 +15,8 @@ from flux.util import configs, load_ae, load_clip, load_flow_model, load_t5, sav
 
 NSFW_THRESHOLD = 0.85
 
+BENCHMARK_RUN = True
+BENCHMARK_RUN_ITERS = 20
 
 @dataclass
 class SamplingOptions:
@@ -114,6 +116,8 @@ def main(
     trt_transformer_precision: str = "bf16",
     **kwargs: dict | None,
 ):
+    assert not offload, "We are not optimizing for offload yet"
+    assert not trt, "We are not optimizing for trt yet"
     """
     Sample the flux model. Either interactively (set `--loop`) or run for a
     single image.
@@ -174,9 +178,13 @@ def main(
 
     # init all components
     t5 = load_t5(torch_device, max_length=256 if name == "flux-schnell" else 512)
+    t5 = torch.compile(t5)
     clip = load_clip(torch_device)
+    clip = torch.compile(clip)
     model = load_flow_model(name, device="cpu" if offload else torch_device)
+    model = torch.compile(model)
     ae = load_ae(name, device="cpu" if offload else torch_device)
+    ae.decode = torch.compile(ae.decode)
 
     if trt:
         # offload to CPU to save memory
@@ -243,12 +251,7 @@ def main(
     if loop:
         opts = parse_prompt(opts)
 
-    while opts is not None:
-        if opts.seed is None:
-            opts.seed = rng.seed()
-        print(f"Generating with seed {opts.seed}:\n{opts.prompt}")
-        t0 = time.perf_counter()
-
+    def iter(opts, ae, t5, clip, model):
         # prepare input
         x = get_noise(
             1,
@@ -256,7 +259,7 @@ def main(
             opts.width,
             device=torch_device,
             dtype=torch.bfloat16,
-            seed=opts.seed,
+            seed=123,  # opts.seed,
         )
         opts.seed = None
         if offload:
@@ -286,12 +289,28 @@ def main(
         with torch.autocast(device_type=torch_device.type, dtype=torch.bfloat16):
             x = ae.decode(x)
 
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        t1 = time.perf_counter()
+        return x
+
+    while opts is not None:
+        if opts.seed is None:
+            opts.seed = rng.seed()
+        print(f"Generating with seed {opts.seed}:\n{opts.prompt}")
+
+        iter_count = 0
+        runtimes = []
+        while iter_count < BENCHMARK_RUN_ITERS:
+            t0 = time.perf_counter()
+            x = iter(opts, ae, t5, clip, model)
+            iter_count += 1
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            t1 = time.perf_counter()
+            runtimes.append(t1 - t0)
+        import statistics
+        median_runtime = statistics.median(runtimes)
 
         fn = output_name.format(idx=idx)
-        print(f"Done in {t1 - t0:.1f}s. Saving {fn}")
+        print(f"Done in {median_runtime:.3f}s (median runtime). Saving {fn}")
 
         idx = save_image(nsfw_classifier, name, output_name, idx, x, add_sampling_metadata, prompt)
 
