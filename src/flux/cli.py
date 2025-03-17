@@ -5,12 +5,13 @@ from dataclasses import dataclass
 from glob import iglob
 
 import torch
-from cuda import cudart
-from fire import Fire
+import torch_tensorrt
+from torch.export._trace import _export
+import torch.utils._pytree as pytree
 from transformers import pipeline
+from fire import Fire
 
 from flux.sampling import denoise, get_noise, get_schedule, prepare, unpack
-from flux.trt.trt_manager import TRTManager
 from flux.util import configs, load_ae, load_clip, load_flow_model, load_t5, save_image
 
 NSFW_THRESHOLD = 0.85
@@ -136,6 +137,7 @@ def main(
         trt: use TensorRT backend for optimized inference
         kwargs: additional arguments for TensorRT support
     """
+    assert not offload, "Offload is not supported"
 
     prompt = prompt.split("|")
     if len(prompt) == 1:
@@ -180,61 +182,92 @@ def main(
     clip = load_clip(torch_device)
     clip = torch.compile(clip)
     model = load_flow_model(name, device="cpu" if offload else torch_device)
-    model = torch.compile(model)
     ae = load_ae(name, device="cpu" if offload else torch_device)
     ae.decode = torch.compile(ae.decode)
 
+    # Optimize the `model`
+    # Option 1: TensorRT optimization using torch.export and torch_tensorrt.dynamo.compile
     if trt:
-        # offload to CPU to save memory
-        ae = ae.cpu()
-        model = model.cpu()
-        clip = clip.cpu()
-        t5 = t5.cpu()
+        # Save original model configuration if needed
+        model_config = getattr(model, "config", None)
+        
+        # Move model to GPU for export
+        model = model.to(torch_device)
+        
+        # Set up dummy input shapes based on actual usage in the code
+        # Note: These might need adjustment based on the specific model structure
+        batch_size = 2
+        
+        # Create dummy inputs that match the expected input structure of the model
+        # This will need to be customized based on the actual model's input structure
+        dummy_inputs = {
+            "img": torch.randn((batch_size, 4096, 64), dtype=torch.bfloat16).to(torch_device),
+            "img_ids": torch.randn((batch_size, 4096, 3), dtype=torch.bfloat16).to(torch_device),
+            "txt": torch.randn((batch_size, 256, 4096), dtype=torch.bfloat16).to(torch_device),
+            "txt_ids": torch.randn((batch_size, 256, 3), dtype=torch.bfloat16).to(torch_device),
+            "timesteps": torch.tensor([1.0], dtype=torch.bfloat16).to(torch_device),
+            "y": torch.randn((batch_size, 768), dtype=torch.bfloat16).to(torch_device),
+            "guidance": torch.tensor([guidance], dtype=torch.float32).to(torch_device),
+        }
 
-        torch.cuda.empty_cache()
+        def create_dynamic_shape(x):
+            col = {}
+            for i in range(len(x.shape)):
+                col[i] = torch.export.Dim.AUTO
+            return col
 
-        trt_ctx_manager = TRTManager(
-            bf16=True,
-            device=torch_device,
-            static_batch=kwargs.get("static_batch", True),
-            static_shape=kwargs.get("static_shape", True),
+        dynamic_shapes = pytree.tree_map_only(
+            torch.Tensor, lambda x: create_dynamic_shape(x), dummy_inputs
         )
-        ae.decoder.params = ae.params
-        engines = trt_ctx_manager.load_engines(
-            models={
-                "clip": clip,
-                "transformer": model,
-                "t5": t5,
-                "vae": ae.decoder,
-            },
-            engine_dir=os.environ.get("TRT_ENGINE_DIR", "./engines"),
-            onnx_dir=os.environ.get("ONNX_DIR", "./onnx"),
-            opt_image_height=height,
-            opt_image_width=width,
-            transformer_precision=trt_transformer_precision,
-        )
-
-        torch.cuda.synchronize()
-
-        trt_ctx_manager.init_runtime()
-        # TODO: refactor. stream should be part of engine constructor maybe !!
-        for _, engine in engines.items():
-            engine.set_stream(stream=trt_ctx_manager.stream)
-
-        if not offload:
-            for _, engine in engines.items():
-                engine.load()
-
-            calculate_max_device_memory = trt_ctx_manager.calculate_max_device_memory(engines)
-            _, shared_device_memory = cudart.cudaMalloc(calculate_max_device_memory)
-
-            for _, engine in engines.items():
-                engine.activate(device=torch_device, device_memory=shared_device_memory)
-
-        ae = engines["vae"]
-        model = engines["transformer"]
-        clip = engines["clip"]
-        t5 = engines["t5"]
+        
+        # Export the model
+        try:
+            print("Exporting model via torch.export...")
+            exported_model = _export(
+                model,
+                tuple(list(dummy_inputs.values())),
+                dynamic_shapes=dynamic_shapes,
+                strict=False,
+            )
+            
+            # Compile the exported model with TensorRT
+            print("Compiling model with TensorRT...")
+            if trt_transformer_precision == "fp16":
+                precision = {torch.float16}
+            elif trt_transformer_precision == "bf16":
+                precision = {torch.bfloat16}
+            elif trt_transformer_precision == "fp32":
+                precision = {torch.float32}
+            else:
+                raise ValueError(f"Invalid precision: {trt_transformer_precision}")
+                
+            trt_model = torch_tensorrt.dynamo.compile(
+                exported_model,
+                inputs=dummy_inputs,
+                enabled_precisions=precision,
+                truncate_double=True,
+                min_block_size=1,
+                use_fp32_acc=True,
+                use_explicit_typing=True if trt_transformer_precision == "fp32" else False,
+            )
+            
+            # Clean up to save memory
+            del exported_model
+            model.to("cpu")
+            torch.cuda.empty_cache()
+            
+            # Restore the model config if needed
+            if model_config is not None:
+                trt_model.config = model_config
+                
+            # Replace the original model with the TensorRT optimized one
+            model = trt_model
+            
+        except Exception as e:
+            raise
+    else:
+        # Option 2: Use torch.compile instead of TensorRT
+        model = torch.compile(model)
 
     rng = torch.Generator(device="cpu")
     opts = SamplingOptions(
@@ -268,7 +301,7 @@ def main(
         timesteps = get_schedule(opts.num_steps, inp["img"].shape[1], shift=(name != "flux-schnell"))
 
         # offload TEs to CPU, load model to gpu
-        if offload:
+        if offload and not trt:
             t5, clip = t5.cpu(), clip.cpu()
             torch.cuda.empty_cache()
             model = model.to(torch_device)
@@ -277,7 +310,7 @@ def main(
         x = denoise(model, **inp, timesteps=timesteps, guidance=opts.guidance)
 
         # offload model, load autoencoder to gpu
-        if offload:
+        if offload and not trt:
             model.cpu()
             torch.cuda.empty_cache()
             ae.decoder.to(x.device)
@@ -352,8 +385,9 @@ def main(
         else:
             opts = None
 
-    if trt:
-        trt_ctx_manager.stop_runtime()
+    # Clean up
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def app():
