@@ -113,6 +113,7 @@ def main(
     offload: bool = False,
     output_dir: str = "output",
     add_sampling_metadata: bool = True,
+    compile: bool = False,
     trt: bool = False,
     trt_transformer_precision: str = "bf16",
     **kwargs: dict | None,
@@ -134,6 +135,7 @@ def main(
         loop: start an interactive session and sample multiple times
         guidance: guidance value used for guidance distillation
         add_sampling_metadata: Add the prompt to the image Exif metadata
+        compile: use torch.compile for optimized inference
         trt: use TensorRT backend for optimized inference
         kwargs: additional arguments for TensorRT support
     """
@@ -178,16 +180,18 @@ def main(
 
     # init all components
     t5 = load_t5(torch_device, max_length=256 if name == "flux-schnell" else 512)
-    t5 = torch.compile(t5)
     clip = load_clip(torch_device)
-    clip = torch.compile(clip)
     model = load_flow_model(name, device="cpu" if offload else torch_device)
     ae = load_ae(name, device="cpu" if offload else torch_device)
-    ae.decode = torch.compile(ae.decode)
 
     # Optimize the `model`
     # Option 1: TensorRT optimization using torch.export and torch_tensorrt.dynamo.compile
-    if trt:
+    if compile:
+        t5 = torch.compile(t5)
+        clip = torch.compile(clip)
+        model = torch.compile(model)
+        ae.decode = torch.compile(ae.decode)
+    elif trt:
         # Save original model configuration if needed
         model_config = getattr(model, "config", None)
         
@@ -262,12 +266,14 @@ def main(
                 
             # Replace the original model with the TensorRT optimized one
             model = trt_model
+
+            # torch.compile the other parts of the overall model
+            t5 = torch.compile(t5)
+            clip = torch.compile(clip)
+            ae.decode = torch.compile(ae.decode)
             
         except Exception as e:
             raise
-    else:
-        # Option 2: Use torch.compile instead of TensorRT
-        model = torch.compile(model)
 
     rng = torch.Generator(device="cpu")
     opts = SamplingOptions(
@@ -370,9 +376,10 @@ def main(
         
         import statistics
         median_runtime = statistics.median(runtimes)
+        max_runtime = max(runtimes)
 
         fn = output_name.format(idx=idx)
-        print(f"Done in {median_runtime:.3f}s (median runtime). Saving {fn}")
+        print(f"Done in {median_runtime:.3f}s (median runtime). {max_runtime:.3f}s (max runtime). Saving {fn}")
 
         idx = save_image(nsfw_classifier, name, output_name, idx, x, add_sampling_metadata, prompt)
 
