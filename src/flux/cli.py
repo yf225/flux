@@ -116,8 +116,6 @@ def main(
     trt_transformer_precision: str = "bf16",
     **kwargs: dict | None,
 ):
-    assert not offload, "We are not optimizing for offload yet"
-    assert not trt, "We are not optimizing for trt yet"
     """
     Sample the flux model. Either interactively (set `--loop`) or run for a
     single image.
