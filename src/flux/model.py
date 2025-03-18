@@ -91,15 +91,6 @@ class Flux(nn.Module):
         y: Tensor,
         guidance: Tensor | None = None,
     ) -> Tensor:
-        # print(f"img shape: {img.shape}")
-        # print(f"img_ids shape: {img_ids.shape}")
-        # print(f"txt shape: {txt.shape}")
-        # print(f"txt_ids shape: {txt_ids.shape}")
-        # print(f"timesteps shape: {timesteps.shape}")
-        # print(f"y shape: {y.shape}")
-        # if guidance is not None:
-        #     print(f"guidance shape: {guidance.shape}")
-        # print("-------------------")
         if img.ndim != 3 or txt.ndim != 3:
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
 

@@ -201,6 +201,22 @@ def main(
         # Set up dummy input shapes based on actual usage in the code
         # Note: These might need adjustment based on the specific model structure
         batch_size = 2
+
+        BATCH = torch.export.Dim("batch", min=1, max=2)
+        SEQ_LEN = torch.export.Dim("seq_len", min=1, max=512)
+        # This particular min, max values for img_id input are recommended by torch dynamo during the export of the model.
+        # To see this recommendation, you can try exporting using min=1, max=4096
+        IMG_ID = torch.export.Dim("img_id", min=3586, max=4096)
+
+        dynamic_shapes = {
+            "img": {0: BATCH, 1: IMG_ID},
+            "img_ids": {0: BATCH, 1: IMG_ID},
+            "txt": {0: BATCH, 1: SEQ_LEN},
+            "txt_ids": {0: BATCH, 1: SEQ_LEN},
+            "timesteps": {0: BATCH},
+            "y": {0: BATCH},
+            "guidance": {0: BATCH},
+        }
         
         # Create dummy inputs that match the expected input structure of the model
         # This will need to be customized based on the actual model's input structure
@@ -209,20 +225,20 @@ def main(
             "img_ids": torch.randn((batch_size, 4096, 3), dtype=torch.bfloat16).to(torch_device),
             "txt": torch.randn((batch_size, 256, 4096), dtype=torch.bfloat16).to(torch_device),
             "txt_ids": torch.randn((batch_size, 256, 3), dtype=torch.bfloat16).to(torch_device),
-            "timesteps": torch.tensor([1.0], dtype=torch.bfloat16).to(torch_device),
+            "timesteps": torch.tensor([1.0] * batch_size, dtype=torch.bfloat16).to(torch_device),
             "y": torch.randn((batch_size, 768), dtype=torch.bfloat16).to(torch_device),
-            "guidance": torch.tensor([guidance], dtype=torch.float32).to(torch_device),
+            "guidance": torch.tensor([guidance] * batch_size, dtype=torch.float32).to(torch_device),
         }
 
-        def create_dynamic_shape(x):
-            col = {}
-            for i in range(len(x.shape)):
-                col[i] = torch.export.Dim.AUTO
-            return col
+        # def create_dynamic_shape(x):
+        #     col = {}
+        #     for i in range(len(x.shape)):
+        #         col[i] = torch.export.Dim.AUTO
+        #     return col
 
-        dynamic_shapes = pytree.tree_map_only(
-            torch.Tensor, lambda x: create_dynamic_shape(x), dummy_inputs
-        )
+        # dynamic_shapes = pytree.tree_map_only(
+        #     torch.Tensor, lambda x: create_dynamic_shape(x), dummy_inputs
+        # )
         
         # Export the model
         try:
@@ -324,7 +340,8 @@ def main(
         # decode latents to pixel space
         x = unpack(x.float(), opts.height, opts.width)
         with torch.autocast(device_type=torch_device.type, dtype=torch.bfloat16):
-            x = ae.decode(x)
+            with torch.profiler.record_function("ae.decode"):
+                x = ae.decode(x)
 
         return x
 

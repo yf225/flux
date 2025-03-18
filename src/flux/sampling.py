@@ -49,12 +49,14 @@ def prepare(t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[st
 
     if isinstance(prompt, str):
         prompt = [prompt]
-    txt = t5(prompt)
+    with torch.profiler.record_function("t5"):
+        txt = t5(prompt)
     if txt.shape[0] == 1 and bs > 1:
         txt = repeat(txt, "1 ... -> bs ...", bs=bs)
     txt_ids = torch.zeros(bs, txt.shape[1], 3)
 
-    vec = clip(prompt)
+    with torch.profiler.record_function("clip"):
+        vec = clip(prompt)
     if vec.shape[0] == 1 and bs > 1:
         vec = repeat(vec, "1 ... -> bs ...", bs=bs)
 
@@ -256,15 +258,16 @@ def denoise(
     guidance_vec = torch.full((img.shape[0],), guidance, device=img.device, dtype=img.dtype)
     for t_curr, t_prev in zip(timesteps[:-1], timesteps[1:]):
         t_vec = torch.full((img.shape[0],), t_curr, dtype=img.dtype, device=img.device)
-        pred = model(
-            img=torch.cat((img, img_cond), dim=-1) if img_cond is not None else img,
-            img_ids=img_ids,
-            txt=txt,
-            txt_ids=txt_ids,
-            y=vec,
-            timesteps=t_vec,
-            guidance=guidance_vec,
-        )
+        with torch.profiler.record_function("denoise::model"):
+            pred = model(
+                img=torch.cat((img, img_cond), dim=-1) if img_cond is not None else img,
+                img_ids=img_ids,
+                txt=txt,
+                txt_ids=txt_ids,
+                y=vec,
+                timesteps=t_vec,
+                guidance=guidance_vec,
+            )
 
         img = img + (t_prev - t_curr) * pred
 
