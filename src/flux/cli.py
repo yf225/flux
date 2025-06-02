@@ -360,11 +360,10 @@ def main(
             
             timestamp = int(datetime.datetime.now().timestamp())
             trace_path = f"gpu_traces/trace_{timestamp}.json"
-            manifold_path = f"gpu_traces/tree/willfeng/flux/trace_{timestamp}.json"
-            
             prof.export_chrome_trace(trace_path)
             
             # Run the manifold upload command
+            manifold_path = f"gpu_traces/tree/willfeng/flux/trace_{timestamp}.json"
             result = subprocess.run(
                 ["manifold", "put", trace_path, manifold_path],
                 capture_output=True,
