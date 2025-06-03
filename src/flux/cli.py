@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from glob import iglob
 
 import torch
-import torch_tensorrt
 from torch.export._trace import _export
 import torch.utils._pytree as pytree
 from transformers import pipeline
@@ -261,6 +260,7 @@ def main(
             else:
                 raise ValueError(f"Invalid precision: {trt_transformer_precision}")
                 
+            import torch_tensorrt
             trt_model = torch_tensorrt.dynamo.compile(
                 exported_model,
                 inputs=dummy_inputs,
