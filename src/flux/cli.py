@@ -375,11 +375,14 @@ def main(
             else:
                 print(f"Failed to upload trace: {result.stderr}")
 
+            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=100))
+
         with torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
             schedule=torch.profiler.schedule(skip_first=1, wait=0, warmup=5, active=2),
             on_trace_ready=trace_handler,
             with_stack=False,
+            record_shapes=True,
         ) as prof:
             while iter_count < BENCHMARK_RUN_ITERS:
                 t0 = time.perf_counter()
@@ -389,7 +392,7 @@ def main(
                 runtimes.append(t1 - t0)
                 iter_count += 1
                 prof.step()
-        
+
         import statistics
         median_runtime = statistics.median(runtimes)
         max_runtime = max(runtimes)
