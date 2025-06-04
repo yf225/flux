@@ -186,10 +186,10 @@ def main(
     # Optimize the `model`
     # Option 1: TensorRT optimization using torch.export and torch_tensorrt.dynamo.compile
     if compile:
-        t5 = torch.compile(t5)
-        clip = torch.compile(clip)
-        model = torch.compile(model)
-        ae.decode = torch.compile(ae.decode)
+        t5 = torch.compile(t5, mode="max-autotune")
+        clip = torch.compile(clip, mode="max-autotune")
+        model = torch.compile(model, mode="max-autotune")
+        ae.decode = torch.compile(ae.decode, mode="max-autotune")
     elif trt:
         # Save original model configuration if needed
         model_config = getattr(model, "config", None)
