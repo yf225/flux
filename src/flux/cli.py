@@ -16,7 +16,7 @@ from flux.util import configs, load_ae, load_clip, load_flow_model, load_t5, sav
 NSFW_THRESHOLD = 0.85
 
 BENCHMARK_RUN = True
-BENCHMARK_RUN_ITERS = 20
+BENCHMARK_RUN_ITERS = 3
 
 @dataclass
 class SamplingOptions:
@@ -361,6 +361,7 @@ def main(
             timestamp = int(datetime.datetime.now().timestamp())
             trace_path = f"gpu_traces/trace_{timestamp}.json"
             prof.export_chrome_trace(trace_path)
+            print(f"Local GPU trace path: {trace_path}")
             
             # Run the manifold upload command
             manifold_path = f"gpu_traces/tree/willfeng/flux/trace_{timestamp}.json"
@@ -379,7 +380,7 @@ def main(
 
         with torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(skip_first=1, wait=0, warmup=5, active=2),
+            schedule=torch.profiler.schedule(skip_first=1, wait=0, warmup=1, active=1),
             on_trace_ready=trace_handler,
             with_stack=False,
             record_shapes=True,
