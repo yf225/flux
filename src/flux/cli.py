@@ -16,7 +16,7 @@ from flux.util import configs, load_ae, load_clip, load_flow_model, load_t5, sav
 NSFW_THRESHOLD = 0.85
 
 BENCHMARK_RUN = True
-BENCHMARK_RUN_ITERS = 3
+BENCHMARK_RUN_ITERS = 10
 
 @dataclass
 class SamplingOptions:
@@ -376,11 +376,11 @@ def main(
             else:
                 print(f"Failed to upload trace: {result.stderr}")
 
-            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=100))
+            print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=1000))
 
         with torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(skip_first=1, wait=0, warmup=1, active=1),
+            schedule=torch.profiler.schedule(skip_first=1, wait=5, warmup=1, active=1),
             on_trace_ready=trace_handler,
             with_stack=False,
             record_shapes=True,
