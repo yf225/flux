@@ -357,7 +357,9 @@ def main(
         def trace_handler(prof):
             import datetime
             import subprocess
-            
+            from pathlib import Path
+
+            Path("gpu_traces").mkdir(exist_ok=True)
             timestamp = int(datetime.datetime.now().timestamp())
             trace_path = f"gpu_traces/trace_{timestamp}.json"
             prof.export_chrome_trace(trace_path)
