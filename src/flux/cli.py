@@ -382,7 +382,7 @@ def main(
 
         with torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(skip_first=1, wait=5, warmup=1, active=1),
+            schedule=torch.profiler.schedule(skip_first=1, wait=5, warmup=1, active=3),
             on_trace_ready=trace_handler,
             with_stack=False,
             record_shapes=True,
